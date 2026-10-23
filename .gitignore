@@ -8,4 +8,5 @@ src/php-8.4.26/
 
 # Runtime output of the exploit (proof file / derived libphp offsets)
 out/*
+out-calibrate/
 !out/.gitkeep

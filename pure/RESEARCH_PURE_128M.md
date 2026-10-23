@@ -378,9 +378,44 @@ print(hex(Counter(qs).most_common(1)[0][0] - 0x65EB60))  # libphp
 | 远端 `~/p2s-pure-1022/evidence/e_r1..3.resp` | 3 次 200 OK 越界读的原始响应 |
 | 远端 `~/p2s-pure-1022/evidence/pwn_pure_batch_20261022.log` | 加固后 6 连击（3 同 worker + 3 全新容器）全链日志 |
 | `pure/evidence/pwn_pure_official_20261022.log` | stock 官方 `php:8.4.26-apache` + 官方 `php.ini-production` 上 3 连击全链日志 |
-| `pure/evidence/exploit_entry_20261022.log` | 根目录 `exploit.py` 与 `pure/pwn_pure.py` 别名各 1 次全链 |
+| `pure/evidence/exploit_entry_20261022.log` | 根目录 `exploit.py` 与 `pure/pwn_pure.py` 别名各 1 次全链日志
 
-## 9. 约束与免责声明
+## 9. PHP 8.5.x 不兼容（2026-10-23）
+
+A1→B1 原语依赖 **PS(id) 是 multipart sid 的独立拷贝**：
+8.4.26 在 `MULTIPART_EVENT_FILE_START` 里
+`PS(id) = zend_string_init(Z_STRVAL(progress->sid),
+Z_STRLEN(progress->sid), 0)`（**新分配**，refcount=1）。
+OOM bailout 跳过正常 shutdown 后，这个独立拷贝悬在
+A1 时代的堆上，B1 的伪造 `zend_string` 头才有可读的
+悬空 `PS(id)`。
+
+8.5.1 改成 `PS(id) = zend_string_copy(Z_STR(progress->sid))`
+（**引用** progress->sid，refcount=2）。请求结束（含
+bailout 后的 `MULTIPART_EVENT_END`）会
+`php_rshutdown_session_globals()` 释放 PS(id)，再
+`zval_ptr_dtor(&progress->sid)` 释放 progress->sid——
+两条路径都把字符串正常释放，**没有悬空的独立拷贝**。
+
+实测（podman `php:8.5.1-apache`，单 worker prefork，
+官方 ini）：
+
+- 128M 下 A1 OOM（big≥77）`zend_mm_heap corrupted`
+  → worker SIGSEGV/abort（早期多 worker 配置）；
+  单 worker 下 OOM 偶尔可控（worker 存活），但 B1
+  只返回两个正常 32 字符 PHPSESSID（无泄漏）。
+- 降低 `memory_limit=16M` 后 OOM 可控（worker 存活），
+  但 OOM 发生在 multipart 解析早期（分配 4096/8192/
+  20480B），**不是** END cleanup 的 `php_url_encode`
+  路径，PS(id) 从未悬空，B1 仍无泄漏。
+
+结论：8.5.x 的 session id 生命周期变了（init→copy），
+A1→B1 原语不能移植。需要新的原语（例如让 PS(id) 在
+8.5.x 下也变成独立分配、或换一个 dangling-pointer
+来源），目前仓库未实现。8.4.26 仍是唯一已验证目标。
+
+## 10. 约束与免责声明
+
 
 - 所有请求形状绑定官方 `php:8.4.26-apache`（trixie）构建、官方
   `php.ini-production`、单 worker prefork；换构建/ini 需重新标定。
