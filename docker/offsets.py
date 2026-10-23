@@ -16,7 +16,7 @@ Usage:
 """
 
 from __future__ import annotations
-
+import json
 import os
 import struct
 import subprocess
@@ -137,6 +137,50 @@ def main() -> int:
     print(f"zif_system     0x{zif:x}")
     print(f"zval_ptr_dtor  0x{dtor:x}")
     print(f"wrote {output}")
+
+    # Also write a profiles/ row for tools/profiles.py so
+    # recon can match this build by version.  S/hsv and the
+    # stage params stay at the legacy 8.4.26 values -- they
+    # are heap-layout-dependent and must be re-calibrated
+    # per build; rce_verified stays false until a real run.
+    try:
+        ver = subprocess.run(
+            ["docker", "exec", container, "php", "-r",
+             "echo PHP_VERSION;"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        ver = ""
+    if ver:
+        prof_dir = os.path.join(
+            os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))),
+            "profiles")
+        os.makedirs(prof_dir, exist_ok=True)
+        name = "php-%s-calibrated-amd64" % ver
+        prof = {
+            "name": name,
+            "php_version": ver,
+            "distro": "calibrated",
+            "arch": "amd64",
+            "image": container,
+            "offsets": {
+                "zif_system": "0x%x" % zif,
+                "zval_ptr_dtor": "0x%x" % dtor,
+                "S": "0xF8398",
+                "hsv": "0x7D720",
+            },
+            "rce_verified": False,
+            "notes": ("symbol offsets extracted from %s; "
+                      "S/hsv are legacy 8.4.26 placeholders "
+                      "and stage params are unset -- "
+                      "calibrate before use" % container),
+        }
+        prof_path = os.path.join(prof_dir, name + ".json")
+        with open(prof_path, "w", encoding="utf-8") as f:
+            json.dump(prof, f, indent=2)
+            f.write("\n")
+        print(f"profile  {prof_path} (rce_verified=false)")
     return 0
 
 
